@@ -1,0 +1,5 @@
+"","estimator",".y.","group1","group2","p","p.adj","p.format","p.signif","method"
+"1","rxy","relatedness","broad","local",0.00275365499878866,0.011,"0.0028","**","T-test"
+"2","wang","relatedness","broad","local",0.505232033265989,0.96,"0.5052","ns","T-test"
+"3","lynchli","relatedness","broad","local",0.0336828570555707,0.1,"0.0337","*","T-test"
+"4","lxy","relatedness","broad","local",0.232686234320105,0.23,"0.23","ns","Wilcoxon"

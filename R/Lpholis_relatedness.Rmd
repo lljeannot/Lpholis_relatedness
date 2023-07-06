@@ -1,0 +1,1806 @@
+---
+title: "Lpholis relatedness"
+author: "Laura-Li Jeannot"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  theme: cosmo
+  html_document: null
+highlight: tango
+toc: yes
+toc_float:
+  collapsed: no
+smooth_scroll: no
+toc_depth: 4
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load data and packages
+
+```{r base}
+
+# 1. Required packages ----
+
+#Download Demerelate and its dependencies from CRAN archive and install using tar.gz file
+library(Demerelate)
+library(broom)
+library(MASS)
+library(MuMIn)
+library(reshape2)
+library(plyr)
+library(ggpmisc)
+library(tidyverse) 
+library(ggh4x)
+library(spdep)
+library(adespatial)
+library(ade4)
+library(CKMRsim)
+library(ggpubr)
+library(glmmTMB)
+
+# 2. Import data ----
+
+# 2.1. Genotype data - format: Demerelate
+
+pop <- read.table("data/BDD_Lpholis_Demerelate.txt", header = T)
+pop[pop == "0"] <- " "
+
+# 2.2. Genotype data - format: CKMRsim
+
+genos <- read_csv("data/BDD_Lpholis_CKMRsim.csv", show_col_types = FALSE)
+
+# 2.3. Genetic distance matrices - Nei and FST
+
+NDistance <- read.csv("data/NeiDistance.csv", sep=';', header = T, row.names = 1)
+FDistance <- read.csv("data/FSTDistance.csv", sep=';', header = T, row.names = 1)
+F1Distance <- FDistance / (1 - FDistance)
+
+# 2.3.a. Format data
+
+# Broad scale
+
+NDistance[upper.tri(NDistance)] <- NA
+NDistance_long <- matrix(as.matrix(NDistance), 
+                         dimnames=list(t(outer(colnames(NDistance), rownames(NDistance), FUN = paste)), NULL)) %>% 
+  melt() %>% 
+  dplyr::select(-Var2) %>% 
+  separate(Var1, c("Site1", "Site2")) %>% 
+  filter(value != 0 | Site1 == Site2) %>%
+  dplyr::rename(NDistance = value) 
+
+F1Distance[upper.tri(F1Distance)] <- NA
+F1Distance_long <- matrix(as.matrix(F1Distance), 
+                          dimnames=list(t(outer(colnames(F1Distance), rownames(F1Distance), FUN = paste)), NULL)) %>% 
+  melt() %>% 
+  dplyr::select(-Var2) %>% 
+  separate(Var1, c("Site1", "Site2")) %>% 
+  filter(value != 0 | Site1 == Site2) %>%
+  dplyr::rename(F1Distance = value)
+
+# Local scale
+
+NDistance_L <- NDistance[1:8,1:8]
+FDistance_L <- FDistance[1:8,1:8]
+F1Distance_L <- F1Distance[1:8,1:8]
+
+NDistance_L[upper.tri(NDistance_L)] <- NA
+NDistance_L_long <- NDistance_L %>% 
+  pivot_longer(everything()) %>% 
+  filter(!is.na(value)) %>% 
+  select(-name)
+
+F1Distance_L[upper.tri(F1Distance_L)] <- NA
+F1Distance_L_long <- F1Distance_L %>%
+  pivot_longer(everything()) %>% 
+  filter(!is.na(value)) %>% 
+  select(-name)
+
+# 2.4. Site data
+
+SPDistance <- read.csv("data/ShortestPathDistance.csv", header = T, row.names = 1)
+GDistance <- read.csv("data/GeosphereDistance.csv", header = T, row.names = 1)
+
+```
+
+
+## I. Relative relatedness
+
+# Calculate relative relatedness
+
+```{r, warnings = FALSE}
+# 1. Calculate relatedness ----
+
+# 1.1. Generate relatedness values from Demerelate
+
+#rxy <- data.frame(Emp.calc(pop, value = "rxy", ref.pop = "NA")) %>% 
+#  rownames_to_column("rownames") %>% 
+#  rename(rxy = 2)
+
+#wang <- data.frame(Emp.calc(pop, value = "wang", ref.pop = "NA")) %>% 
+#  rownames_to_column("rownames") %>% 
+#  rename(wang = 2)
+
+#lynchli <- data.frame(Emp.calc(pop, value = "Li", ref.pop = "NA")) %>% 
+#  rownames_to_column("rownames") %>% 
+#  rename(lynchli = 2)
+
+#lxy <- data.frame(Emp.calc(pop, value = "lxy", ref.pop = "NA")) %>% 
+#  rownames_to_column("rownames") %>% 
+#  rename(lxy = 2)
+
+#estimators <- rxy %>% 
+#  full_join(wang, by = "rownames") %>% 
+#  full_join(lynchli, by = "rownames") %>% 
+#  full_join(lxy, by = "rownames") 
+
+# 1.2. Or import data
+
+estimators_data <- read.csv("data/Demerelate_relatedness.csv", row.names = 1)
+```
+
+# Relatedness analysis based on relative relatedness values
+
+```{r, echo = T, results = 'hide'}
+# 1. Transform distance matrices format ----
+
+SPDistance[lower.tri(SPDistance)] <- 0
+SPDistance <- matrix(as.matrix(SPDistance), 
+                     dimnames=list(t(outer(colnames(SPDistance), rownames(SPDistance), FUN = paste)), NULL)) %>% 
+  melt() %>% 
+  dplyr::select(-Var2) %>% 
+  separate(Var1, c("Site1", "Site2")) %>% 
+  filter(value != 0 | Site1 == Site2) %>%
+  dplyr::rename(SPDistance = value) 
+
+GDistance[lower.tri(GDistance)] <- 0
+GDistance <- matrix(as.matrix(GDistance), 
+                    dimnames=list(t(outer(colnames(GDistance), rownames(GDistance), FUN=paste)), NULL)) %>% 
+  melt() %>% 
+  dplyr::select(-Var2) %>% 
+  separate(Var1, c("Site1", "Site2")) %>% 
+  filter(value != 0 | Site1 == Site2) %>%
+  dplyr::rename(GDistance = value)
+
+# 2. Compute site-wise relatedness average ----
+
+# 2.1. Broad-scale
+
+estimators <- estimators_data %>% 
+  mutate(Site1 = str_extract(rownames, ".+(?=_)"),
+         Site2 = str_extract(rownames, "(?<=_).+")) %>% 
+  mutate(Site1 = str_extract(Site1, "[:alpha:]+"),
+         Site2 = str_extract(Site2, "[:alpha:]+")) %>% 
+  select(-rownames) %>% 
+  ddply(c("Site1", "Site2"), summarise,
+        rxy = mean(rxy),
+        wang = mean(wang), 
+        lynchli = mean(lynchli),
+        lxy = mean(lxy)) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  select(-SPDistance.x, - SPDistance.y) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x)) %>% 
+  select(-GDistance.x, - GDistance.y) %>% 
+  left_join(NDistance_long, by = c("Site1", "Site2")) %>% 
+  left_join(NDistance_long, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(NDistance = ifelse(is.na(NDistance.x), NDistance.y, NDistance.x)) %>% 
+  left_join(F1Distance_long, by = c("Site1", "Site2")) %>% 
+  left_join(F1Distance_long, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(F1Distance = ifelse(is.na(F1Distance.x), F1Distance.y, F1Distance.x)) %>%
+  select(-NDistance.x, -NDistance.y, -F1Distance.x, -F1Distance.y)
+
+estimators_mean <- estimators_data %>% 
+  mutate(Site1 = str_extract(rownames, ".+(?=_)"),
+         Site2 = str_extract(rownames, "(?<=_).+")) %>% 
+  mutate(Site1 = str_extract(Site1, "[:alpha:]+"),
+         Site2 = str_extract(Site2, "[:alpha:]+")) %>% 
+  select(-rownames) %>% 
+  summarise(rxy_sd = sd(rxy),
+            wang_sd = sd(wang),
+            lynchli_sd = sd(lynchli),
+            lxy_sd = sd(lxy),
+            rxy = mean(rxy),
+            wang = mean(wang), 
+            lynchli = mean(lynchli),
+            lxy = mean(lxy))
+  
+
+# 2.2. Local scale 
+
+estimators_L <- estimators_data %>% 
+  mutate(Site1 = str_extract(rownames, ".+(?=_)"),
+         Site2 = str_extract(rownames, "(?<=_).+")) %>% 
+  mutate(Site1 = str_extract(Site1, "[:alpha:]+"),
+         Site2 = str_extract(Site2, "[:alpha:]+")) %>%
+  select(-rownames) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL")) %>% 
+  ddply(c("Site1", "Site2"), summarise,
+        rxy = mean(rxy),
+        wang = mean(wang), 
+        lynchli = mean(lynchli),
+        lxy = mean(lxy)) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  select(-SPDistance.x, - SPDistance.y) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x)) %>% 
+  select(-GDistance.x, - GDistance.y)
+
+estimators_L_mean <- estimators_data %>% 
+  mutate(Site1 = str_extract(rownames, ".+(?=_)"),
+         Site2 = str_extract(rownames, "(?<=_).+")) %>% 
+  mutate(Site1 = str_extract(Site1, "[:alpha:]+"),
+         Site2 = str_extract(Site2, "[:alpha:]+")) %>% 
+  select(-rownames) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL")) %>% 
+  summarise(rxy_sd = sd(rxy),
+            wang_sd = sd(wang),
+            lynchli_sd = sd(lynchli),
+            lxy_sd = sd(lxy),
+            rxy = mean(rxy),
+            wang = mean(wang), 
+            lynchli = mean(lynchli),
+            lxy = mean(lxy))
+
+# 2.3. Broad scale without local sites for T-tests and Wilcoxon test
+
+estimators_ <- estimators_data %>% 
+  mutate(Site1 = str_extract(rownames, ".+(?=_)"),
+         Site2 = str_extract(rownames, "(?<=_).+")) %>% 
+  mutate(Site1 = str_extract(Site1, "[:alpha:]+"),
+         Site2 = str_extract(Site2, "[:alpha:]+")) %>%
+  select(-rownames) %>% 
+  filter(!(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") |
+           Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))) %>% 
+  ddply(c("Site1", "Site2"), summarise,
+        rxy = mean(rxy),
+        wang = mean(wang), 
+        lynchli = mean(lynchli),
+        lxy = mean(lxy)) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  select(-SPDistance.x, - SPDistance.y) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  filter(!is.na(rxy)) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x)) %>% 
+  select(-GDistance.x, - GDistance.y)
+
+# 2.4. T-test
+
+# 2.4.a. Check normal distribution
+
+shapiro.test(estimators_$rxy)
+shapiro.test(estimators_$wang)
+shapiro.test(estimators_$lynchli)
+shapiro.test(estimators_$lxy) #not normal
+
+shapiro.test(estimators_L$rxy)
+shapiro.test(estimators_L$wang)
+shapiro.test(estimators_L$lynchli)
+shapiro.test(estimators_L$lxy)
+
+# 2.4.b. Test
+
+t.test(estimators_$rxy, estimators_L$rxy, alternative = "two.sided")
+t.test(estimators_$wang, estimators_L$wang, alternative = "two.sided")
+t.test(estimators_$lynchli, estimators_L$lynchli, alternative = "two.sided")
+wilcox.test(estimators_$lxy, estimators_L$lxy, alternative = "two.sided")
+
+```
+
+# Graph - Fig 5
+
+```{r}
+
+# 1. Format data ----
+
+estimators_graph_comp <- rbind(estimators %>% dplyr::select(-F1Distance, -NDistance) %>% mutate(scale = "broad"), 
+                               estimators_L %>% mutate(scale = "local")) %>% 
+  melt(id = c("Site1", "Site2", "SPDistance", "scale"), 
+       measure = c("rxy", "wang", "lynchli", "lxy")) %>% 
+  dplyr::rename(estimator = variable,
+                relatedness = value)
+
+stat.test_lxy <- compare_means(
+  relatedness ~ scale, data = estimators_graph_comp %>% filter(estimator == "lxy"), 
+  group.by = "estimator",
+  method = "wilcox.test"
+)
+
+stat.test <- compare_means(
+  relatedness ~ scale, data = estimators_graph_comp, 
+  group.by = "estimator",
+  method = "t.test") %>% 
+  filter(estimator != "lxy") %>% 
+  rbind(stat.test_lxy)
+
+# 2. Or import data (optional) ----
+
+#estimators_graph_comp <- read.csv("fig_data/estimators_graph_comp.csv")
+#stat.test <- read.csv("fig_data/stat_test.csv")
+
+# 3. Plot ----
+
+ggplot(data = estimators_graph_comp, aes(x = estimator, y = relatedness, col = scale)) +
+  geom_boxplot() +
+  stat_pvalue_manual(
+    stat.test, x = "estimator", y.position = 0.02,
+    label = "italic(p)~'= {p.adj}'",
+    position = position_dodge(0.8),
+    size = 3.5,
+    parse = T) +
+  labs(x = "Estimator", y = "Average relatedness", colour = "Scale") +
+  scale_x_discrete(labels=c(expression(italic(r[xy])), 
+                            expression(italic(Wang)), 
+                            expression(italic(Lynch-Li)), 
+                            expression(italic(l[xy])))) +
+  scale_color_manual(labels=c("Broad", "Small"), values = c("steelblue1", "tan1"))
+
+```
+# II. Relatedness based on relationship category
+
+# Calculate number of relationships
+
+```{r}
+# 1. Assign log-likelihood to each relationship ----
+
+# 1.1. Format data
+
+# 1.1.a. Compute allele frequencies 
+
+nc <- ncol(genos)
+loci <- str_replace(names(genos)[seq(2, nc, by = 2)], "\\.\\.\\.[0-9]+$", "")
+
+long_genos <- genos %>% 
+  gather(key = "loc", value = "Allele", -ID) %>%
+  separate(loc, into = c("Locus", "gene_copy"), sep = "\\.") %>%
+  mutate(Allele = as.character(Allele)) %>%
+  mutate(Allele = ifelse(Allele == "0", NA, Allele)) %>%
+  rename(Indiv = ID)
+
+allele_freqs <- long_genos %>% 
+  count(Locus, Allele) %>%
+  group_by(Locus) %>%
+  mutate(Freq = n / sum(n),
+         Chrom = "Unk",
+         Pos = as.integer(factor(Locus, levels = loci))) %>%
+  ungroup() %>%
+  select(Chrom, Pos, Locus, Allele, Freq) %>%
+  arrange(Pos, desc(Freq)) %>%
+  mutate(AlleIdx = NA,
+         LocIdx = NA) %>%
+  filter(!is.na(Allele))
+
+afreqs_ready <- reindex_markers(allele_freqs)
+
+# 1.1.b. Create CKMR object
+
+Lpho_ckmr <- create_ckmr(
+  D = afreqs_ready,
+  kappa_matrix = kappas[c("HS", "U"), ], #next time just HS and U
+  ge_mod_assumed = ge_model_TGIE,
+  ge_mod_true = ge_model_TGIE,
+  ge_mod_assumed_pars_list = list(epsilon = 0.002), #error rate
+  ge_mod_true_pars_list = list(epsilon = 0.002)
+)
+
+# 1.2. Simulate genotype pairs and calculate log-likelihood
+
+Lpho_Qs <- simulate_Qij(Lpho_ckmr, 
+                       calc_relats = c("HS", "U"),
+                       sim_relats = c("HS", "U") )
+
+# 1.3. Simulate FPR and FPR corresponding to a subsample of log-likelihoods
+
+Lpho_mcmc <- mc_sample_simple(Lpho_Qs, 
+                          nu = "HS",
+                          de = "U",
+                          lambda_stars = seq(0, 10, by = .01))
+
+# 1.4. Compute log-likelihoods of each relationship from dataset
+
+hs_pairwise_logls <- pairwise_kin_logl_ratios(D1 = long_genos, 
+                                              D2 = long_genos, 
+                                              CK = Lpho_ckmr,
+                                              numer = "HS",
+                                              denom = "U",
+                                              num_cores = 1)
+
+# 2. Associate each relationship from Demerelate with log-likelihoods from CKMRsim ----
+
+relat_select <- estimators_data %>% 
+  mutate(D2_indiv = str_extract(rownames, ".+(?=_)"),
+         D1_indiv = str_extract(rownames, "(?<=_).+")) %>% 
+  left_join(hs_pairwise_logls, by = c("D2_indiv", "D1_indiv")) %>% 
+  left_join(hs_pairwise_logls, by = c("D1_indiv" = "D2_indiv", "D2_indiv" = "D1_indiv")) %>% 
+  select(-num_loc.x, -num_loc.y, -logl_ratio.y, -rownames, -lxy, -wang, -lynchli) %>% 
+  rename(logl_ratio = logl_ratio.x)
+
+# 3. Select relationships with rxy > 0.25 and log-likelihoods ranging from 1 to 5.5 ----
+
+relat_select_1 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 1)
+
+relat_select_2 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 2)
+
+relat_select_3 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 3)
+
+relat_select_4 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 4)
+
+relat_select_5 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 5)
+
+relat_select_6 <- relat_select %>% 
+  filter(rxy > 0.25 & logl_ratio >= 6)
+```
+# Model number of relationships according to distance
+
+```{r}
+
+# 1. Relationships with log-likelihood > 1 ----
+
+# 1.1. Format data
+
+relat_select_1_ <- relat_select_1 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_1_zeros <- relat_select_1_ %>% 
+  filter(SPDistance == 0)
+  
+relat_select_1_all <- relat_select_1_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_1_zeros)
+
+# 1.2. Get model output for least cost path, straight-line distances and null model
+
+mod_1_SP <- glmmTMB(n ~ SPDistance, data = relat_select_1_all, family = "nbinom2")
+mod_1_SP_output <- summary(mod_1_SP)
+
+mod_1_G <- glmmTMB(n ~ GDistance, data = relat_select_1_all, family = "nbinom2")
+mod_1_G_output <-summary(mod_1_G)
+
+mod_1_null <- glmmTMB(n ~ 1, data = relat_select_1_all, family = "nbinom2")
+mod_1_null_output <-summary(mod_1_null)
+
+# 1.3. Calculate AIC
+
+AIC_mod_1 <- AIC(mod_1_SP, mod_1_G, mod_1_null)
+
+# 1.4. Calculate dispersion 
+
+N = nrow(relat_select_1_all)
+k = length(coef(mod_1_SP))
+
+res = residuals(mod_1_SP, type = "pearson")
+disp_1_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_1_G, type = "pearson")
+disp_1_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_1_null, type = "pearson")
+disp_1_null <- sum(res^2) / (N - k)
+
+# 1.5. Calculate R2
+
+r2_1_SP <- r.squaredGLMM(mod_1_SP, null = mod_1_null)
+r2_1_G <- r.squaredGLMM(mod_1_G, null = mod_1_null)
+
+# 2. Reiterate process for log-likelihoods between 2 and 6 ----
+
+# 2.1. Log-likelihood > 2
+
+relat_select_2_ <- relat_select_2 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_2_zeros <- relat_select_2_ %>% 
+  filter(SPDistance == 0)
+
+relat_select_2_all <- relat_select_2_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_2_zeros)
+
+mod_2_SP <- glmmTMB(n ~ SPDistance, data = relat_select_2_all, family = "nbinom2")
+mod_2_SP_output <- summary(mod_2_SP)
+
+mod_2_G <- glmmTMB(n ~ GDistance, data = relat_select_2_all, family = "nbinom2")
+mod_2_G_output <-summary(mod_2_G)
+
+mod_2_null <- glmmTMB(n ~ 1, data = relat_select_2_all, family = "nbinom2")
+mod_2_null_output <- summary(mod_2_null)
+
+AIC_mod_2 <- AIC(mod_2_SP, mod_2_G, mod_2_null)
+ 
+N = nrow(relat_select_2_all)
+k = length(coef(mod_2_SP))
+
+res = residuals(mod_2_SP, type = "pearson")
+disp_2_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_2_G, type = "pearson")
+disp_2_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_2_null, type = "pearson")
+disp_2_null <- sum(res^2) / (N - k)
+
+r2_2_SP <- r.squaredGLMM(mod_2_SP, null = mod_2_null)
+r2_2_G <- r.squaredGLMM(mod_2_G, null = mod_2_null)
+
+# 2.2. Log-likelihood > 3
+
+relat_select_3_ <- relat_select_3 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_3_zeros <- relat_select_3_ %>% 
+  filter(SPDistance == 0)
+
+relat_select_3_all <- relat_select_3_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_3_zeros)
+
+mod_3_SP <- glmmTMB(n ~ SPDistance, data = relat_select_3_all, family = "nbinom2")
+mod_3_SP_output <- summary(mod_3_SP)
+
+mod_3_G <- glmmTMB(n ~ GDistance, data = relat_select_3_all, family = "nbinom2")
+mod_3_G_output <-summary(mod_3_G)
+
+mod_3_null <- glmmTMB(n ~ 1, data = relat_select_3_all, family = "nbinom2")
+mod_3_null_output <- summary(mod_3_null)
+
+AIC_mod_3 <- AIC(mod_3_SP, mod_3_G, mod_3_null)
+
+N = nrow(relat_select_3_all)
+k = length(coef(mod_3_SP))
+
+res = residuals(mod_3_SP, type = "pearson")
+disp_3_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_3_G, type = "pearson")
+disp_3_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_3_null, type = "pearson")
+disp_3_null <- sum(res^2) / (N - k)
+
+r2_3_SP <- r.squaredGLMM(mod_3_SP, null = mod_3_null)
+r2_3_G <- r.squaredGLMM(mod_3_G, null = mod_3_null)
+
+# 2.3. Log-likelihood > 4
+
+relat_select_4_ <- relat_select_4 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_4_zeros <- relat_select_4_ %>% 
+  filter(SPDistance == 0)
+
+relat_select_4_all <- relat_select_4_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_4_zeros)
+
+mod_4_SP <- glmmTMB(n ~ SPDistance, data = relat_select_4_all, family = "nbinom2")
+mod_4_SP_output <- summary(mod_4_SP)
+
+mod_4_G <- glmmTMB(n ~ GDistance, data = relat_select_4_all, family = "nbinom2")
+mod_4_G_output <-summary(mod_4_G)
+
+mod_4_null <- glmmTMB(n ~ 1, data = relat_select_4_all, family = "nbinom2")
+mod_4_null_output <- summary(mod_4_null)
+
+AIC_mod_4 <- AIC(mod_4_SP, mod_4_G, mod_4_null)
+
+N = nrow(relat_select_4_all)
+k = length(coef(mod_4_SP))
+
+res = residuals(mod_4_SP, type = "pearson")
+disp_4_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_4_G, type = "pearson")
+disp_4_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_4_null, type = "pearson")
+disp_4_null <- sum(res^2) / (N - k)
+
+r2_4_SP <- r.squaredGLMM(mod_4_SP, null = mod_4_null)
+r2_4_G <- r.squaredGLMM(mod_4_G, null = mod_4_null)
+
+# 2.4. Log-likelihood > 5
+
+relat_select_5_ <- relat_select_5 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_5_zeros <- relat_select_5_ %>% 
+  filter(SPDistance == 0)
+
+relat_select_5_all <- relat_select_5_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_5_zeros)
+
+mod_5_SP <- glmmTMB(n ~ SPDistance, data = relat_select_5_all, family = "nbinom2")
+mod_5_SP_output <- summary(mod_5_SP)
+
+mod_5_G <- glmmTMB(n ~ GDistance, data = relat_select_5_all, family = "nbinom2")
+mod_5_G_output <-summary(mod_5_G)
+
+mod_5_null <- glmmTMB(n ~ 1, data = relat_select_5_all, family = "nbinom2")
+mod_5_null_output <- summary(mod_5_null)
+
+AIC_mod_5 <- AIC(mod_5_SP, mod_5_G, mod_5_null)
+
+N = nrow(relat_select_5_all)
+k = length(coef(mod_5_SP))
+
+res = residuals(mod_5_SP, type = "pearson")
+disp_5_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_5_G, type = "pearson")
+disp_5_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_5_null, type = "pearson")
+disp_5_null <- sum(res^2) / (N - k)
+
+r2_5_SP <- r.squaredGLMM(mod_5_SP, null = mod_5_null)
+r2_5_G <- r.squaredGLMM(mod_5_G, null = mod_5_null)
+
+# 2.5. Log-likelihood > 6
+
+relat_select_6_ <- relat_select_6 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) 
+
+relat_select_6_zeros <- relat_select_6_ %>% 
+  filter(SPDistance == 0)
+
+relat_select_6_all <- relat_select_6_ %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_6_zeros)
+
+mod_6_SP <- glmmTMB(n ~ SPDistance, data = relat_select_6_all, family = "poisson")
+mod_6_SP_output <- summary(mod_6_SP)
+
+mod_6_G <- glmmTMB(n ~ GDistance, data = relat_select_6_all, family = "poisson")
+mod_6_G_output <-summary(mod_6_G)
+
+mod_6_null <- glmmTMB(n ~ 1, data = relat_select_6_all, family = "poisson")
+mod_6_null_output <- summary(mod_6_null)
+
+AIC_mod_6 <- AIC(mod_6_SP, mod_6_G, mod_6_null)
+
+N = nrow(relat_select_6_all)
+k = length(coef(mod_6_SP))
+
+res = residuals(mod_6_SP, type = "pearson")
+disp_6_SP <- sum(res^2) / (N - k)
+
+res = residuals(mod_6_G, type = "pearson")
+disp_6_G <- sum(res^2) / (N - k)
+
+res = residuals(mod_6_null, type = "pearson")
+disp_6_null <- sum(res^2) / (N - k)
+
+r2_6_SP <- r.squaredGLMM(mod_6_SP, null = mod_6_null)
+r2_6_G <- r.squaredGLMM(mod_6_G, null = mod_6_null)
+
+# 3. Repeat entire process only for local sites ----
+
+# 3.1. Log-likelihood > 1
+
+relat_select_1_L <- relat_select_1 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_1_zeros_L <- relat_select_1_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_1_all_L <- relat_select_1_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_1_zeros_L)
+
+mod_1_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_1_all_L, family = "nbinom2")
+mod_1_SP_output_L <- summary(mod_1_SP_L)
+
+mod_1_G_L <- glmmTMB(n ~ GDistance, data = relat_select_1_all_L, family = "nbinom2")
+mod_1_G_output_L <-summary(mod_1_G_L)
+
+mod_1_null_L <- glmmTMB(n ~ 1, data = relat_select_1_all_L, family = "nbinom2")
+mod_1_null_output_L <-summary(mod_1_null_L)
+
+AIC_mod_1_L <- AIC(mod_1_SP_L, mod_1_G_L, mod_1_null_L)
+
+N = nrow(relat_select_1_all_L)
+k = length(coef(mod_1_SP_L))
+
+res = residuals(mod_1_SP_L, type = "pearson")
+disp_1_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_1_G_L, type = "pearson")
+disp_1_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_1_null_L, type = "pearson")
+disp_1_null_L <- sum(res^2) / (N - k)
+
+r2_1_SP_L <- r.squaredGLMM(mod_1_SP_L, null = mod_1_null_L)
+r2_1_G_L <- r.squaredGLMM(mod_1_G_L, null = mod_1_null_L)
+
+# 3.2. Log-likelihood > 2
+
+relat_select_2_L <- relat_select_2 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_2_zeros_L <- relat_select_2_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_2_all_L <- relat_select_2_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_2_zeros_L)
+
+mod_2_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_2_all_L, family = "nbinom2")
+mod_2_SP_output_L <- summary(mod_2_SP_L)
+
+mod_2_G_L <- glmmTMB(n ~ GDistance, data = relat_select_2_all_L, family = "nbinom2")
+mod_2_G_output_L <-summary(mod_2_G_L)
+
+mod_2_null_L <- glmmTMB(n ~ 1, data = relat_select_2_all_L, family = "nbinom2")
+mod_2_null_output_L <- summary(mod_2_null_L)
+
+AIC_mod_2_L <- AIC(mod_2_SP_L, mod_2_G_L, mod_2_null_L)
+
+N = nrow(relat_select_2_all_L)
+k = length(coef(mod_2_SP_L))
+
+res = residuals(mod_2_SP_L, type = "pearson")
+disp_2_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_2_G_L, type = "pearson")
+disp_2_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_2_null_L, type = "pearson")
+disp_2_null_L <- sum(res^2) / (N - k)
+
+r2_2_SP_L <- r.squaredGLMM(mod_2_SP_L, null = mod_2_null_L)
+r2_2_G_L <- r.squaredGLMM(mod_2_G_L, null = mod_2_null_L)
+
+# 3.3. Log-likelihood > 3
+
+relat_select_3_L <- relat_select_3 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_3_zeros_L <- relat_select_3_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_3_all_L <- relat_select_3_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_3_zeros_L)
+
+mod_3_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_3_all_L, family = "nbinom2")
+mod_3_SP_output_L <- summary(mod_3_SP_L)
+
+mod_3_G_L <- glmmTMB(n ~ GDistance, data = relat_select_3_all_L, family = "nbinom2")
+mod_3_G_output_L <-summary(mod_3_G_L)
+
+mod_3_null_L <- glmmTMB(n ~ 1, data = relat_select_3_all_L, family = "nbinom2")
+mod_3_null_output_L <- summary(mod_3_null_L)
+
+AIC_mod_3_L <- AIC(mod_3_SP_L, mod_3_G_L, mod_3_null_L)
+
+N = nrow(relat_select_3_all_L)
+k = length(coef(mod_3_SP_L))
+
+res = residuals(mod_3_SP_L, type = "pearson")
+disp_3_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_3_G_L, type = "pearson")
+disp_3_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_3_null_L, type = "pearson")
+disp_3_null_L <- sum(res^2) / (N - k)
+
+r2_3_SP_L <- r.squaredGLMM(mod_3_SP_L, null = mod_3_null_L)
+r2_3_G_L <- r.squaredGLMM(mod_3_G_L, null = mod_3_null_L)
+
+# 3.4. Log-likelihood > 4
+
+relat_select_4_L <- relat_select_4 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_4_zeros_L <- relat_select_4_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_4_all_L <- relat_select_4_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_4_zeros_L)
+
+mod_4_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_4_all_L, family = "nbinom2")
+mod_4_SP_output_L <- summary(mod_4_SP_L)
+
+mod_4_G_L <- glmmTMB(n ~ GDistance, data = relat_select_4_all_L, family = "nbinom2")
+mod_4_G_output_L <-summary(mod_4_G_L)
+
+mod_4_null_L <- glmmTMB(n ~ 1, data = relat_select_4_all_L, family = "nbinom2")
+mod_4_null_output_L <- summary(mod_4_null_L)
+
+AIC_mod_4_L <- AIC(mod_4_SP_L, mod_4_G_L, mod_4_null_L)
+
+N = nrow(relat_select_4_all_L)
+k = length(coef(mod_4_SP_L))
+
+res = residuals(mod_4_SP_L, type = "pearson")
+disp_4_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_4_G_L, type = "pearson")
+disp_4_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_4_null_L, type = "pearson")
+disp_4_null_L <- sum(res^2) / (N - k)
+
+r2_4_SP_L <- r.squaredGLMM(mod_4_SP_L, null = mod_4_null_L)
+r2_4_G_L <- r.squaredGLMM(mod_4_G_L, null = mod_4_null_L)
+
+# 3.5. Log-likelihood > 5
+
+relat_select_5_L <- relat_select_5 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_5_zeros_L <- relat_select_5_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_5_all_L <- relat_select_5_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_5_zeros_L)
+
+mod_5_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_5_all_L, family = "nbinom2")
+mod_5_SP_output_L <- summary(mod_5_SP_L)
+
+mod_5_G_L <- glmmTMB(n ~ GDistance, data = relat_select_5_all_L, family = "nbinom2")
+mod_5_G_output_L <-summary(mod_5_G_L)
+
+mod_5_null_L <- glmmTMB(n ~ 1, data = relat_select_5_all_L, family = "nbinom2")
+mod_5_null_output_L <- summary(mod_5_null_L)
+
+AIC_mod_5_L <- AIC(mod_5_SP_L, mod_5_G_L, mod_5_null_L)
+
+N = nrow(relat_select_5_all_L)
+k = length(coef(mod_5_SP_L))
+
+res = residuals(mod_5_SP_L, type = "pearson")
+disp_5_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_5_G_L, type = "pearson")
+disp_5_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_5_null_L, type = "pearson")
+disp_5_null_L <- sum(res^2) / (N - k)
+
+r2_5_SP_L <- r.squaredGLMM(mod_5_SP_L, null = mod_5_null_L)
+r2_5_G_L <- r.squaredGLMM(mod_5_G_L, null = mod_5_null_L)
+
+# 3.6. Log-likelihood > 6
+
+relat_select_6_L <- relat_select_6 %>% 
+  mutate(Site1 = str_extract(D2_indiv, "[:alpha:]+"),
+         Site2 = str_extract(D1_indiv, "[:alpha:]+")) %>% 
+  dplyr::select(-D1_indiv, -D2_indiv) %>% 
+  full_join(SPDistance, by = c("Site1", "Site2")) %>% 
+  full_join(SPDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(SPDistance = ifelse(is.na(SPDistance.x), SPDistance.y, SPDistance.x)) %>% 
+  full_join(GDistance, by = c("Site1", "Site2")) %>% 
+  full_join(GDistance, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(GDistance = ifelse(is.na(GDistance.x), GDistance.y, GDistance.x),
+         GDistance = ifelse(is.na(GDistance), 0, GDistance)) %>% 
+  dplyr::select(-SPDistance.x, -SPDistance.y, -GDistance.x, -GDistance.y) %>%
+  group_by(SPDistance) %>% 
+  mutate(n = ifelse(!is.na(rxy), n()-1, 0),
+         n = ifelse(!is.na(rxy) & SPDistance == 0, 1, n),
+         n = ifelse(n < 1 & !is.na(rxy), 1, n)) %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+relat_select_6_zeros_L <- relat_select_6_L %>% 
+  filter(SPDistance == 0)
+
+relat_select_6_all_L <- relat_select_6_L %>% 
+  filter(SPDistance != 0) %>% 
+  merge(aggregate(n ~ SPDistance, ., max), .) %>% 
+  distinct(SPDistance, n, .keep_all = T) %>% 
+  rbind(., relat_select_6_zeros_L)
+
+mod_6_SP_L <- glmmTMB(n ~ SPDistance, data = relat_select_6_all_L, family = "poisson")
+mod_6_SP_output_L <- summary(mod_6_SP_L)
+
+mod_6_G_L <- glmmTMB(n ~ GDistance, data = relat_select_6_all_L, family = "poisson")
+mod_6_G_output_L <-summary(mod_6_G_L)
+
+mod_6_null_L <- glmmTMB(n ~ 1, data = relat_select_6_all_L, family = "poisson")
+mod_6_null_output_L <- summary(mod_6_null_L)
+
+AIC_mod_6_L <- AIC(mod_6_SP_L, mod_6_G_L, mod_6_null_L)
+
+N = nrow(relat_select_6_all_L)
+k = length(coef(mod_6_SP_L))
+
+res = residuals(mod_6_SP_L, type = "pearson")
+disp_6_SP_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_6_G_L, type = "pearson")
+disp_6_G_L <- sum(res^2) / (N - k)
+
+res = residuals(mod_6_null_L, type = "pearson")
+disp_6_null_L <- sum(res^2) / (N - k)
+
+r2_6_SP_L <- r.squaredGLMM(mod_6_SP_L, null = mod_6_null_L)
+r2_6_G_L <- r.squaredGLMM(mod_6_G_L, null = mod_6_null_L)
+
+```
+
+# Generate data for Table 4 and Table S5
+
+```{r, eval = FALSE}
+
+# 1. Model output ----
+
+mod_1_G_output
+mod_1_SP_output
+mod_2_G_output
+mod_2_SP_output
+mod_3_G_output
+mod_3_SP_output
+mod_4_G_output
+mod_4_SP_output
+mod_5_G_output
+mod_5_SP_output
+mod_6_G_output
+mod_6_SP_output
+
+mod_1_G_output_L
+mod_1_SP_output_L
+mod_2_G_output_L
+mod_2_SP_output_L
+mod_3_G_output_L
+mod_3_SP_output_L
+mod_4_G_output_L
+mod_4_SP_output_L
+mod_5_G_output_L
+mod_5_SP_output_L
+mod_6_G_output_L
+mod_6_SP_output_L
+
+mod_1_null_output
+mod_2_null_output
+mod_3_null_output
+mod_4_null_output
+mod_5_null_output
+mod_6_null_output
+
+mod_1_null_output_L
+mod_2_null_output_L
+mod_3_null_output_L
+mod_4_null_output_L
+mod_5_null_output_L
+mod_6_null_output_L
+
+# 2. AIC ----
+
+AIC_mod_1
+AIC_mod_2
+AIC_mod_3
+AIC_mod_4
+AIC_mod_5
+AIC_mod_6
+
+AIC_mod_1_L
+AIC_mod_2_L
+AIC_mod_3_L
+AIC_mod_4_L
+AIC_mod_5_L
+AIC_mod_6_L
+
+# 3. Dispersion ----
+
+disp_1_SP
+disp_2_SP
+disp_3_SP
+disp_4_SP
+disp_5_SP
+disp_6_SP
+
+disp_1_SP_L
+disp_2_SP_L
+disp_3_SP_L
+disp_4_SP_L
+disp_5_SP_L
+disp_6_SP_L
+
+disp_1_G
+disp_2_G
+disp_3_G
+disp_4_G
+disp_5_G
+disp_6_G
+
+disp_1_G_L
+disp_2_G_L
+disp_3_G_L
+disp_4_G_L
+disp_5_G_L
+disp_6_G_L
+
+disp_1_null
+disp_2_null
+disp_3_null
+disp_4_null
+disp_5_null
+disp_6_null
+
+disp_1_null_L
+disp_2_null_L
+disp_3_null_L
+disp_4_null_L
+disp_5_null_L
+disp_6_null_L
+
+# 4. R2 ----
+
+r2_1_SP
+r2_2_SP
+r2_3_SP
+r2_4_SP
+r2_5_SP
+r2_6_SP
+
+r2_1_SP_L
+r2_2_SP_L
+r2_3_SP_L
+r2_4_SP_L
+r2_5_SP_L
+r2_6_SP_L
+
+r2_1_G
+r2_2_G
+r2_3_G
+r2_4_G
+r2_5_G
+r2_6_G
+
+r2_1_G_L
+r2_2_G_L
+r2_3_G_L
+r2_4_G_L
+r2_5_G_L
+r2_6_G_L
+```
+
+# Log-likelihood by distance graph - Fig 4
+
+```{r, echo = FALSE}
+
+# 1. Format data ----
+
+n_graph <- relat_select_1_all %>% 
+  mutate(llcol = case_when(
+    logl_ratio > 6 ~ 6,
+    logl_ratio > 5 & logl_ratio < 6 ~ 5,
+    logl_ratio > 4 & logl_ratio < 5 ~ 4,
+    logl_ratio > 3 & logl_ratio < 4 ~ 3,
+    logl_ratio > 2 & logl_ratio < 3 ~ 2,
+    logl_ratio > 1 & logl_ratio < 2 ~ 1,
+    TRUE ~ NA)) %>% 
+  filter(n > 0)
+
+# 2. Or import data (optional) ----
+
+n_graph <- read.csv("fig_data/n_graph.csv")
+
+# 3. Plot ----
+
+ggplot(data = n_graph, aes(x = SPDistance, y = logl_ratio)) +
+  geom_point(aes(size = factor(n), col = factor(llcol))) +
+  geom_smooth(method = "lm", formula = y ~ x, col = "turquoise3") +
+  stat_fit_glance(data = n_graph,
+                  method = "lm",
+                  label.x = "right", label.y = c(0.03),
+                  method.args = list(formula = y~x),
+                  mapping = aes(label = sprintf('italic(R)^2~"="~%.3f~~italic(p)~"="~%.2g',
+                                                after_stat(r.squared), after_stat(p.value))),
+                  parse = T) +
+  labs(x = "Distance (km)", y = "Log-likelihood", size = "Number of relationships", color = "Log-likelihood >") +
+  scale_color_manual(breaks = c("1", "2", "3", "4", "5", "6"),
+                     values = c("aquamarine2", "lightseagreen", "turquoise2", "turquoise3", "turquoise4", "darkslategrey")) +
+  scale_size_discrete(range = c(4,6))
+```
+
+# Graph - Fig 3: relative relatedness, number of relationships, FST* and Nei's distance according to geographic distance
+
+```{r, echo = FALSE}
+
+# 1. Calculate predicted values from GLM log-lik > 1 ----
+
+n_pred_G <- cbind(relat_select_1_all, predict(mod_1_G, se.fit = T, type = "response")) %>% 
+  mutate(upr = fit + 1.96*se.fit,
+         lwr = fit - 1.96*se.fit) %>% 
+  select(Site1, Site2, fit, upr, lwr)
+
+n_pred_SP <- cbind(relat_select_1_all, predict(mod_1_SP, se.fit = T, type = "response")) %>% 
+  mutate(upr = fit + 1.96*se.fit,
+         lwr = fit - 1.96*se.fit) %>% 
+  select(Site1, Site2, fit, upr, lwr)
+
+# 2. Format data for graph ----
+
+estimators_graph <- estimators %>% 
+  left_join(relat_select_1_all, by = c("Site1", "Site2")) %>% 
+  dplyr::select(-SPDistance.y, -logl_ratio, -GDistance.y, -rxy.y) %>% 
+  left_join(relat_select_1_all, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  dplyr::select(-SPDistance, -logl_ratio, -GDistance, -rxy) %>% 
+  rename(SPDistance = SPDistance.x, GDistance = GDistance.x, rxy = rxy.x) %>% 
+  mutate(n = ifelse(is.na(n.x), n.y, n.x)) %>% 
+  dplyr::select(-n.x, -n.y) %>% 
+  left_join(n_pred_G, by = c("Site1", "Site2")) %>% 
+  left_join(n_pred_G, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(n_pred_G = is.na(fit.x), fit.y, fit.x) %>% 
+  left_join(n_pred_G, by = c("Site1", "Site2")) %>% 
+  left_join(n_pred_G, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(n_pred_G = ifelse(is.na(fit.x), fit.y, fit.x),
+         upr_G = ifelse(is.na(upr.x), upr.y, upr.x),
+         lwr_G = ifelse(is.na(lwr.x), lwr.y, lwr.x)) %>%
+  dplyr::select(-fit.x, -fit.y, -upr.x, -upr.y, -lwr.x, -lwr.y) %>% 
+  left_join(n_pred_SP, by = c("Site1", "Site2")) %>% 
+  left_join(n_pred_SP, by = c("Site1" = "Site2", "Site2" = "Site1")) %>% 
+  mutate(n_pred_SP = ifelse(is.na(fit.x), fit.y, fit.x),
+         upr_SP = ifelse(is.na(upr.x), upr.y, upr.x),
+         lwr_SP = ifelse(is.na(lwr.x), lwr.y, lwr.x)) %>%
+  dplyr::select(-fit.x, -fit.y, -upr.x, -upr.y, -lwr.x, -lwr.y) %>% 
+  melt(id = c("Site1", "Site2", "SPDistance", "GDistance"), 
+       measure = c("rxy", "n", "NDistance", "F1Distance", 
+                   "n_pred_G", "n_pred_SP", "upr_G", "upr_SP", "lwr_G", "lwr_SP")) %>% 
+  dplyr::rename(estimator = variable,
+                relatedness = value) %>% 
+  melt(measure = c("SPDistance", "GDistance")) %>% 
+  dplyr::rename(distance_metric = variable,
+                distance = value)
+
+estimators_graph_1 <- estimators_graph %>% 
+  filter(!(estimator %in% c("n_pred_G", "n_pred_SP", "upr_G", "upr_SP", "lwr_G", "lwr_SP"))) %>% 
+  mutate(relatedness = ifelse(estimator %in% c("NDistance", "F1Distance") & distance == 0, NA, relatedness))
+
+estimators_graph_2 <- estimators_graph %>% 
+  filter(estimator %in% c("n_pred_G", "n_pred_SP", "upr_G", "upr_SP", "lwr_G", "lwr_SP")) %>% 
+  filter(!(estimator == "n_pred_G" & distance_metric == "SPDistance" | estimator == "n_pred_SP" & distance_metric == "GDistance"),
+         !(estimator == "upr_G" & distance_metric == "SPDistance" | estimator == "upr_SP" & distance_metric == "GDistance"),
+         !(estimator == "lwr_G" & distance_metric == "SPDistance" | estimator == "lwr_SP" & distance_metric == "GDistance")) %>% 
+  mutate(estimator = case_when(estimator %in% c("n_pred_G", "n_pred_SP") ~ "n",
+                               estimator %in% c("upr_G", "upr_SP") ~ "upr",
+                               estimator %in% c("lwr_G", "lwr_SP") ~ "lwr",
+                               TRUE ~ NA_character_)) %>% 
+  pivot_wider(names_from = estimator, values_from = relatedness) %>% 
+  mutate(estimator = "n", relatedness = n)
+
+# 3. Or import data (optional) ----
+
+estimators_graph_1 <- read.csv("fig_data/estimators_graph_1.csv")
+estimators_graph_2 <- read.csv("fig_data/estimators_graph_2.csv")
+
+my_labeller <- as_labeller(c(rxy = "italic(r[xy])", n = "n", F1Distance = "italic(F[ST])~'*'", NDistance = "Nei*'\\''~s~distance",
+                             SPDistance = "Least-cost~path~distance", GDistance = "Straight-line~distance"),
+                             default = label_parsed)
+
+# 4. Plot ----
+
+ggplot(data = estimators_graph_1, aes(x = distance, y = relatedness, col = estimator)) +
+  geom_point() +
+  geom_smooth(data = estimators_graph_1[-which(estimators_graph_1$estimator == "n"),], method = "lm", formula = y ~ x, se = T) +
+  geom_line(data = estimators_graph_2, aes(x = distance, y = relatedness), size = 1) +
+  geom_ribbon(data = estimators_graph_2, aes(ymin = lwr, ymax = upr), alpha = 0.2, col = NA) +
+  facet_grid2(estimator ~ distance_metric, scales="free_y") +
+  stat_fit_glance(data = estimators_graph_1[-which(estimators_graph_1$estimator == "n"),],
+                  method = "lm",
+                  label.x = "right", 
+                  label.y = c(0.03, 1, 1),
+                  method.args = list(formula = y~x),
+                  mapping = aes(label = sprintf('italic(R)^2~"="~%.3f~~italic(p)~"="~%.2g',
+                                                after_stat(r.squared), after_stat(p.value))),
+                  size = 3.5,
+                  parse = T) +
+  stat_poly_eq(data = estimators_graph_2,
+               label = c(sprintf('italic(R)^2~"= 0.043"~~italic(p)~"= 0.043"'), 
+                         (sprintf('italic(R)^2~"= 0.042"~~italic(p)~"= 0.04"'))), 
+               label.x="right",
+               size = 3.5) +
+  facet_grid2(factor(estimator, levels = c("rxy", "wang", "lynchli", "lxy", "n", "F1Distance", "NDistance")) ~ distance_metric, scales="free_y",
+              labeller = my_labeller) +
+  labs(x = "Distance (km)", y = "", colour = "Estimator") +
+  theme(strip.text.x = element_text(size = 10)) +
+  scale_color_manual(values = alpha(c("steelblue1", "turquoise3", "indianred3", "indianred1"))) +
+  guides(color = "none")
+```
+
+# Graph - Fig S6: Average relatedness per estimator according to distance
+
+```{r, echo = FALSE}
+# 1. Import data for figure (optional) ----
+
+estimators <- read.csv("fig_data/estimators.csv")
+
+# 2. Format data ----
+
+estimators_graph_3 <- estimators %>% 
+  melt(id = c("Site1", "Site2", "SPDistance", "GDistance"), 
+       measure = c("rxy", "wang", "lynchli", "lxy")) %>% 
+  dplyr::rename(estimator = variable,
+                relatedness = value) %>% 
+  melt(measure = c("SPDistance", "GDistance")) %>% 
+  dplyr::rename(distance_metric = variable,
+                distance = value)
+
+my_labeller2 <- as_labeller(c(rxy = "italic(r[xy])", wang = "italic(Wang)", lynchli = "italic(Lynch-Li)", lxy = "italic(l[xy])",
+                             SPDistance = "Least-cost~path~distance", GDistance = "Straight-line~distance"),
+                           default = label_parsed)
+
+# 3. Plot ----
+
+ggplot(data = estimators_graph_3, aes(x = distance, y = relatedness, col = estimator)) +
+  geom_point() +
+  geom_smooth(data = estimators_graph_3, method = "lm", formula = y ~ x, se = T) +
+  facet_grid2(estimator ~ distance_metric, scales="free_y") +
+  stat_fit_glance(data = estimators_graph_3,
+                  method = "lm",
+                  label.x = "right", 
+                  label.y = c(rep(0.03, 4)),
+                  method.args = list(formula = y~x),
+                  mapping = aes(label = sprintf('italic(R)^2~"="~%.3f~~italic(p)~"="~%.2g',
+                                                after_stat(r.squared), after_stat(p.value))),
+                  col = c("steelblue1", "steelblue1", "steelblue2", "steelblue2",
+                          "steelblue3", "steelblue3", "steelblue4", "steelblue4"),
+                  size = 3.5,
+                  parse = T) +
+  facet_grid2(factor(estimator, levels = c("rxy", "wang", "lynchli", "lxy")) ~ distance_metric, scales="free_y",
+              labeller = my_labeller2) +
+  labs(x = "Distance (km)", y = "Average relatedness", colour = "Estimator") +
+  theme(strip.text.x = element_text(size = 10)) +
+  scale_color_manual(values = alpha(c("steelblue1", "steelblue2", "steelblue3", "steelblue4"))) +
+  guides(color = "none")
+```
+
+# III. MSR-Mantel tests
+
+```{r}
+# 1. Genetic distances - Nei and FST ----
+
+# 1.1 Format data
+
+#Note: zeros are excluded from MSR tests
+
+NDistance_long <- NDistance_long %>% 
+  filter(NDistance != 0) 
+
+F1Distance_long <- F1Distance_long %>%
+  filter(F1Distance != 0)
+
+# Local scale
+
+NDistance_L_long <- NDistance_L_long %>% 
+  filter(value != 0) 
+
+F1Distance_L_long <- F1Distance_L_long %>%
+  filter(value != 0)
+
+# 1.2. MSR procedure
+
+# 1.2.a. Broad scale
+
+SPDistance_MSR <- SPDistance %>% filter(SPDistance != 0)
+GDistance_MSR <- GDistance %>% filter(GDistance != 0)
+
+xy_N_SP <- cbind(NDistance_long, SPDistance_MSR$SPDistance) %>% select(-Site1, -Site2)
+colnames(xy_N_SP) <- c("NDistance", "SPDistance")
+
+xy_F1_SP <- cbind(F1Distance_long, SPDistance_MSR$SPDistance) %>% select(-Site1, -Site2)
+colnames(xy_F1_SP) <- c("F1Distance", "SPDistance")
+
+xy_N_G <- cbind(NDistance_long, GDistance_MSR$GDistance) %>% select(-Site1, -Site2)
+colnames(xy_N_G) <- c("NDistance", "GDistance")
+
+xy_F1_G <- cbind(F1Distance_long, GDistance_MSR$GDistance) %>% select(-Site1, -Site2)
+colnames(xy_F1_G) <- c("F1Distance", "GDistance")
+
+nb_N_SP <- graph2nb(gabrielneigh(xy_N_SP), sym = T)
+lw_N_SP <- nb2listw(nb_N_SP)
+
+nb_F1_SP <- graph2nb(gabrielneigh(xy_F1_SP), sym = T)
+lw_F1_SP <- nb2listw(nb_F1_SP)
+
+nb_N_G <- graph2nb(gabrielneigh(xy_N_G), sym = T)
+lw_N_G <- nb2listw(nb_N_G)
+
+nb_F1_G <- graph2nb(gabrielneigh(xy_F1_G), sym = T)
+lw_F1_G <- nb2listw(nb_F1_G)
+
+m.ind_N_SP <- mantel.randtest(dist(xy_N_SP$NDistance), dist(xy_N_SP$SPDistance))
+msr.ind_N_SP <- msr(m.ind_N_SP, lw_N_SP, 999)
+r.msr_N_SP <- msr.ind_N_SP$obs - msr.ind_N_SP$expvar["Expectation"]
+
+m.ind_F1_SP <- mantel.randtest(dist(xy_F1_SP$F1Distance), dist(xy_F1_SP$SPDistance))
+msr.ind_F1_SP <- msr(m.ind_F1_SP, lw_F1_SP, 999)
+r.msr_F1_SP <- msr.ind_F1_SP$obs - msr.ind_F1_SP$expvar["Expectation"]
+
+m.ind_N_G <- mantel.randtest(dist(xy_N_G$NDistance), dist(xy_N_G$GDistance))
+msr.ind_N_G <- msr(m.ind_N_G, lw_N_G, 999)
+r.msr_N_G <- msr.ind_N_G$obs - msr.ind_N_G$expvar["Expectation"]
+
+m.ind_F1_G <- mantel.randtest(dist(xy_F1_G$F1Distance), dist(xy_F1_G$GDistance))
+msr.ind_F1_G <- msr(m.ind_F1_G, lw_F1_G, 999)
+r.msr_F1_G <- msr.ind_F1_G$obs - msr.ind_F1_G$expvar["Expectation"]
+
+# 1.2.b. Local scale
+
+SPDistance_MSR_L <- SPDistance_MSR %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+GDistance_MSR_L <- GDistance_MSR %>% 
+  filter(Site1 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL") &
+         Site2 %in% c("COR", "SALV", "ONS", "COUSO", "GROVE", "CIESN", "CIESS", "SIL"))
+
+xy_N_SP_L <- cbind(NDistance_L_long, SPDistance_MSR_L$SPDistance)
+colnames(xy_N_SP_L) <- c("NDistance", "SPDistance")
+
+xy_F1_SP_L <- cbind(F1Distance_L_long, SPDistance_MSR_L$SPDistance)
+colnames(xy_F1_SP_L) <- c("F1Distance", "SPDistance")
+
+xy_N_G_L <- cbind(NDistance_L_long, GDistance_MSR_L$GDistance)
+colnames(xy_N_G_L) <- c("NDistance", "GDistance")
+
+xy_F1_G_L <- cbind(F1Distance_L_long, GDistance_MSR_L$GDistance)
+colnames(xy_F1_G_L) <- c("F1Distance", "GDistance")
+
+nb_N_SP_L <- graph2nb(gabrielneigh(xy_N_SP_L), sym = T)
+lw_N_SP_L <- nb2listw(nb_N_SP_L)
+
+nb_F1_SP_L <- graph2nb(gabrielneigh(xy_F1_SP_L), sym = T)
+lw_F1_SP_L <- nb2listw(nb_F1_SP_L)
+
+nb_N_G_L <- graph2nb(gabrielneigh(xy_N_G_L), sym = T)
+lw_N_G_L <- nb2listw(nb_N_G_L)
+
+nb_F1_G_L <- graph2nb(gabrielneigh(xy_F1_G_L), sym = T)
+lw_F1_G_L <- nb2listw(nb_F1_G_L)
+
+m.ind_N_SP_L <- mantel.randtest(dist(xy_N_SP_L$NDistance), dist(xy_N_SP_L$SPDistance))
+msr.ind_N_SP_L <- msr(m.ind_N_SP_L, lw_N_SP_L, 999)
+r.msr_N_SP_L <- msr.ind_N_SP_L$obs - msr.ind_N_SP_L$expvar["Expectation"]
+
+m.ind_F1_SP_L <- mantel.randtest(dist(xy_F1_SP_L$F1Distance), dist(xy_F1_SP_L$SPDistance))
+msr.ind_F1_SP_L <- msr(m.ind_F1_SP_L, lw_F1_SP_L, 999)
+r.msr_F1_SP_L <- msr.ind_F1_SP_L$obs - msr.ind_F1_SP_L$expvar["Expectation"]
+
+m.ind_N_G_L <- mantel.randtest(dist(xy_N_G_L$NDistance), dist(xy_N_G_L$GDistance))
+msr.ind_N_G_L <- msr(m.ind_N_G_L, lw_N_G_L, 999)
+r.msr_N_G_L <- msr.ind_N_G_L$obs - msr.ind_N_G_L$expvar["Expectation"]
+
+m.ind_F1_G_L <- mantel.randtest(dist(xy_F1_G_L$F1Distance), dist(xy_F1_G_L$GDistance))
+msr.ind_F1_G_L <- msr(m.ind_F1_G_L, lw_F1_G_L, 999)
+r.msr_F1_G_L <- msr.ind_F1_G_L$obs - msr.ind_F1_G_L$expvar["Expectation"]
+
+# 2. Relatedness ----
+
+# 2.1. Broad scale
+
+# 2.1.a. rxy
+
+xy_rxy_SP <- estimators %>% filter(SPDistance != 0) %>% select(rxy, SPDistance)
+xy_rxy_G <- estimators %>% filter(GDistance != 0) %>% select(rxy, GDistance)
+
+# 2.1.b. Wang
+
+xy_wang_SP <- estimators %>% select(wang, SPDistance)
+xy_wang_G <- estimators %>% select(wang, GDistance)
+
+# 2.1.c. Lynch-Li
+
+xy_lynchli_SP <- estimators %>% select(lynchli, SPDistance)
+xy_lynchli_G <- estimators %>% select(lynchli, GDistance)
+
+# 2.1.d. Lynch-Ritland
+
+xy_lxy_SP <- estimators %>% select(lxy, SPDistance)
+xy_lxy_G <- estimators %>% select(lxy, GDistance)
+
+# 2.1.e. MSR procedure
+
+nb_rxy_SP <- graph2nb(gabrielneigh(xy_rxy_SP), sym = T)
+lw_rxy_SP <- nb2listw(nb_rxy_SP)
+nb_rxy_G <- graph2nb(gabrielneigh(xy_rxy_G), sym = T)
+lw_rxy_G <- nb2listw(nb_rxy_G)
+
+nb_wang_SP <- graph2nb(gabrielneigh(xy_wang_SP), sym = T)
+lw_wang_SP <- nb2listw(nb_wang_SP)
+nb_wang_G <- graph2nb(gabrielneigh(xy_wang_G), sym = T)
+lw_wang_G <- nb2listw(nb_wang_G)
+
+nb_lynchli_SP <- graph2nb(gabrielneigh(xy_lynchli_SP), sym = T)
+lw_lynchli_SP <- nb2listw(nb_lynchli_SP)
+nb_lynchli_G <- graph2nb(gabrielneigh(xy_lynchli_G), sym = T)
+lw_lynchli_G <- nb2listw(nb_lynchli_G)
+
+nb_lxy_SP <- graph2nb(gabrielneigh(xy_lxy_SP), sym = T)
+lw_lxy_SP <- nb2listw(nb_lxy_SP)
+nb_lxy_G <- graph2nb(gabrielneigh(xy_lxy_G), sym = T)
+lw_lxy_G <- nb2listw(nb_lxy_G)
+
+m.ind_rxy_SP <- mantel.randtest(dist(xy_rxy_SP$rxy), dist(xy_rxy_SP$SPDistance))
+msr.ind_rxy_SP <- msr(m.ind_rxy_SP, lw_rxy_SP, 999)
+r.msr_rxy_SP <- msr.ind_rxy_SP$obs - msr.ind_rxy_SP$expvar["Expectation"]
+m.ind_rxy_G <- mantel.randtest(dist(xy_rxy_G$rxy), dist(xy_rxy_G$GDistance))
+msr.ind_rxy_G <- msr(m.ind_rxy_G, lw_rxy_G, 999)
+r.msr_rxy_G <- msr.ind_rxy_G$obs - msr.ind_rxy_G$expvar["Expectation"]
+
+m.ind_wang_SP <- mantel.randtest(dist(xy_wang_SP$wang), dist(xy_wang_SP$SPDistance))
+msr.ind_wang_SP <- msr(m.ind_wang_SP, lw_wang_SP, 999)
+r.msr_wang_SP <- msr.ind_wang_SP$obs - msr.ind_wang_SP$expvar["Expectation"]
+m.ind_wang_G <- mantel.randtest(dist(xy_wang_G$wang), dist(xy_wang_G$GDistance))
+msr.ind_wang_G <- msr(m.ind_wang_G, lw_wang_G, 999)
+r.msr_wang_G <- msr.ind_wang_G$obs - msr.ind_wang_G$expvar["Expectation"]
+
+m.ind_lynchli_SP <- mantel.randtest(dist(xy_lynchli_SP$lynchli), dist(xy_lynchli_SP$SPDistance))
+msr.ind_lynchli_SP <- msr(m.ind_lynchli_SP, lw_lynchli_SP, 999)
+r.msr_lynchli_SP <- msr.ind_lynchli_SP$obs - msr.ind_lynchli_SP$expvar["Expectation"]
+m.ind_lynchli_G <- mantel.randtest(dist(xy_lynchli_G$lynchli), dist(xy_lynchli_G$GDistance))
+msr.ind_lynchli_G <- msr(m.ind_lynchli_G, lw_lynchli_G, 999)
+r.msr_lynchli_G <- msr.ind_lynchli_G$obs - msr.ind_lynchli_G$expvar["Expectation"]
+
+m.ind_lxy_SP <- mantel.randtest(dist(xy_lxy_SP$lxy), dist(xy_lxy_SP$SPDistance))
+msr.ind_lxy_SP <- msr(m.ind_lxy_SP, lw_lxy_SP, 999)
+r.msr_lxy_SP <- msr.ind_lxy_SP$obs - msr.ind_lxy_SP$expvar["Expectation"]
+m.ind_lxy_G <- mantel.randtest(dist(xy_lxy_G$lxy), dist(xy_lxy_G$GDistance))
+msr.ind_lxy_G <- msr(m.ind_lxy_G, lw_lxy_G, 999)
+r.msr_lxy_G <- msr.ind_lxy_G$obs - msr.ind_lxy_G$expvar["Expectation"]
+
+# 2.2. Local scale
+
+# 2.1.a. rxy
+
+xy_rxy_SP_L <- estimators_L %>% select(rxy, SPDistance)
+xy_rxy_G_L <- estimators_L %>% select(rxy, GDistance)
+
+# 2.1.b. Wang
+
+xy_wang_SP_L <- estimators_L %>% select(wang, SPDistance)
+xy_wang_G_L <- estimators_L %>% select(wang, GDistance)
+
+# 2.1.c. Lynch-Li
+
+xy_lynchli_SP_L <- estimators_L %>% select(lynchli, SPDistance)
+xy_lynchli_G_L <- estimators_L %>% select(lynchli, GDistance)
+
+# 2.1.d. Lynch-Ritland
+
+xy_lxy_SP_L <- estimators_L %>% filter(SPDistance != 0) %>% select(lxy, SPDistance)
+xy_lxy_G_L <- estimators_L %>% filter(SPDistance != 0) %>% select(lxy, GDistance)
+
+# 2.1.e. MSR procedure
+
+nb_rxy_SP_L <- graph2nb(gabrielneigh(xy_rxy_SP_L), sym = T)
+lw_rxy_SP_L <- nb2listw(nb_rxy_SP_L)
+nb_rxy_G_L <- graph2nb(gabrielneigh(xy_rxy_G_L), sym = T)
+lw_rxy_G_L <- nb2listw(nb_rxy_G_L)
+
+nb_wang_SP_L <- graph2nb(gabrielneigh(xy_wang_SP_L), sym = T)
+lw_wang_SP_L <- nb2listw(nb_wang_SP_L)
+nb_wang_G_L <- graph2nb(gabrielneigh(xy_wang_G_L), sym = T)
+lw_wang_G_L <- nb2listw(nb_wang_G_L)
+
+nb_lynchli_SP_L <- graph2nb(gabrielneigh(xy_lynchli_SP_L), sym = T)
+lw_lynchli_SP_L <- nb2listw(nb_lynchli_SP_L)
+nb_lynchli_G_L <- graph2nb(gabrielneigh(xy_lynchli_G_L), sym = T)
+lw_lynchli_G_L <- nb2listw(nb_lynchli_G_L)
+
+nb_lxy_SP_L <- graph2nb(gabrielneigh(xy_lxy_SP_L), sym = T)
+lw_lxy_SP_L <- nb2listw(nb_lxy_SP_L)
+nb_lxy_G_L <- graph2nb(gabrielneigh(xy_lxy_G_L), sym = T)
+lw_lxy_G_L <- nb2listw(nb_lxy_G_L)
+
+m.ind_rxy_SP_L <- mantel.randtest(dist(xy_rxy_SP_L$rxy), dist(xy_rxy_SP_L$SPDistance))
+msr.ind_rxy_SP_L <- msr(m.ind_rxy_SP_L, lw_rxy_SP_L, 999)
+r.msr_rxy_SP_L <- msr.ind_rxy_SP_L$obs - msr.ind_rxy_SP_L$expvar["Expectation"]
+m.ind_rxy_G_L <- mantel.randtest(dist(xy_rxy_G_L$rxy), dist(xy_rxy_G_L$GDistance))
+msr.ind_rxy_G_L <- msr(m.ind_rxy_G_L, lw_rxy_G_L, 999)
+r.msr_rxy_G_L <- msr.ind_rxy_G_L$obs - msr.ind_rxy_G_L$expvar["Expectation"]
+
+m.ind_wang_SP_L <- mantel.randtest(dist(xy_wang_SP_L$wang), dist(xy_wang_SP_L$SPDistance))
+msr.ind_wang_SP_L <- msr(m.ind_wang_SP_L, lw_wang_SP_L, 999)
+r.msr_wang_SP_L <- msr.ind_wang_SP_L$obs - msr.ind_wang_SP_L$expvar["Expectation"]
+m.ind_wang_G_L <- mantel.randtest(dist(xy_wang_G_L$wang), dist(xy_wang_G_L$GDistance))
+msr.ind_wang_G_L <- msr(m.ind_wang_G_L, lw_wang_G_L, 999)
+r.msr_wang_G_L <- msr.ind_wang_G_L$obs - msr.ind_wang_G_L$expvar["Expectation"]
+
+m.ind_lynchli_SP_L <- mantel.randtest(dist(xy_lynchli_SP_L$lynchli), dist(xy_lynchli_SP_L$SPDistance))
+msr.ind_lynchli_SP_L <- msr(m.ind_lynchli_SP_L, lw_lynchli_SP_L, 999)
+r.msr_lynchli_SP_L <- msr.ind_lynchli_SP_L$obs - msr.ind_lynchli_SP_L$expvar["Expectation"]
+m.ind_lynchli_G_L <- mantel.randtest(dist(xy_lynchli_G_L$lynchli), dist(xy_lynchli_G_L$GDistance))
+msr.ind_lynchli_G_L <- msr(m.ind_lynchli_G_L, lw_lynchli_G_L, 999)
+r.msr_lynchli_G_L <- msr.ind_lynchli_G_L$obs - msr.ind_lynchli_G_L$expvar["Expectation"]
+
+m.ind_lxy_SP_L <- mantel.randtest(dist(xy_lxy_SP_L$lxy), dist(xy_lxy_SP_L$SPDistance))
+msr.ind_lxy_SP_L <- msr(m.ind_lxy_SP_L, lw_lxy_SP_L, 999)
+r.msr_lxy_SP_L <- msr.ind_lxy_SP_L$obs - msr.ind_lxy_SP_L$expvar["Expectation"]
+m.ind_lxy_G_L <- mantel.randtest(dist(xy_lxy_G_L$lxy), dist(xy_lxy_G_L$GDistance))
+msr.ind_lxy_G_L <- msr(m.ind_lxy_G_L, lw_lxy_G_L, 999)
+r.msr_lxy_G_L <- msr.ind_lxy_G_L$obs - msr.ind_lxy_G_L$expvar["Expectation"]
+
+# 2.3. Calculate effect sizes
+
+SES_rxy_SP <- r.msr_rxy_SP/sqrt(as.data.frame(msr.ind_rxy_SP[4])[3,1])
+SES_rxy_G <- r.msr_rxy_G/sqrt(as.data.frame(msr.ind_rxy_G[4])[3,1])
+SES_wang_SP <- r.msr_wang_SP/sqrt(as.data.frame(msr.ind_wang_SP[4])[3,1])
+SES_wang_G <- r.msr_wang_G/sqrt(as.data.frame(msr.ind_wang_G[4])[3,1])
+SES_lynchli_SP <- r.msr_lynchli_SP/sqrt(as.data.frame(msr.ind_lynchli_SP[4])[3,1])
+SES_lynchli_G <- r.msr_lynchli_G/sqrt(as.data.frame(msr.ind_lynchli_G[4])[3,1])
+SES_lxy_SP <- r.msr_lxy_SP/sqrt(as.data.frame(msr.ind_lxy_SP[4])[3,1])
+SES_lxy_G <- r.msr_lxy_G/sqrt(as.data.frame(msr.ind_lxy_G[4])[3,1])
+
+SES_rxy_SP_L <- r.msr_rxy_SP_L/sqrt(as.data.frame(msr.ind_rxy_SP_L[4])[3,1])
+SES_rxy_G_L <- r.msr_rxy_G_L/sqrt(as.data.frame(msr.ind_rxy_G_L[4])[3,1])
+SES_wang_SP_L <- r.msr_wang_SP_L/sqrt(as.data.frame(msr.ind_wang_SP_L[4])[3,1])
+SES_wang_G_L <- r.msr_wang_G_L/sqrt(as.data.frame(msr.ind_wang_G_L[4])[3,1])
+SES_lynchli_SP_L <- r.msr_lynchli_SP_L/sqrt(as.data.frame(msr.ind_lynchli_SP_L[4])[3,1])
+SES_lynchli_G_L <- r.msr_lynchli_G_L/sqrt(as.data.frame(msr.ind_lynchli_G_L[4])[3,1])
+SES_lxy_SP_L <- r.msr_lxy_SP_L/sqrt(as.data.frame(msr.ind_lxy_SP_L[4])[3,1])
+SES_lxy_G_L <- r.msr_lxy_G_L/sqrt(as.data.frame(msr.ind_lxy_G_L[4])[3,1])
+
+```
+
+# Generate data for Table 3
+
+```{r, eval = FALSE}
+
+msr.ind_rxy_SP
+msr.ind_rxy_G
+msr.ind_wang_SP
+msr.ind_wang_G
+msr.ind_lynchli_SP
+msr.ind_lynchli_G
+msr.ind_lxy_SP
+msr.ind_lxy_G
+msr.ind_rxy_SP_L
+msr.ind_rxy_G_L
+msr.ind_wang_SP_L
+msr.ind_wang_G_L
+msr.ind_lynchli_SP_L
+msr.ind_lynchli_G_L
+msr.ind_lxy_SP_L
+msr.ind_lxy_G_L
+
+r.msr_rxy_SP
+r.msr_rxy_G
+r.msr_wang_SP
+r.msr_wang_G
+r.msr_lynchli_SP
+r.msr_lynchli_G
+r.msr_lxy_SP
+r.msr_lxy_G
+r.msr_rxy_SP_L
+r.msr_rxy_G_L
+r.msr_wang_SP_L
+r.msr_wang_G_L
+r.msr_lynchli_SP_L
+r.msr_lynchli_G_L
+r.msr_lxy_SP_L
+r.msr_lxy_G_L
+
+SES_rxy_SP
+SES_rxy_G 
+SES_wang_SP 
+SES_wang_G 
+SES_lynchli_SP 
+SES_lynchli_G 
+SES_lxy_SP
+SES_lxy_G 
+
+SES_rxy_SP_L 
+SES_rxy_G_L 
+SES_wang_SP_L 
+SES_wang_G_L 
+SES_lynchli_SP_L 
+SES_lynchli_G_L 
+SES_lxy_SP_L 
+SES_lxy_G_L 
+```
