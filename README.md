@@ -21,7 +21,7 @@ This project is organized in 4 folders:
 * :file_folder:	`data` folder contains 7 datasets (see **2.2 Datasets description**).
 * :file_folder:	`R` folder contains 1 _R_ code (see **2.3 Code description**).
 * :file_folder:	`fig_data` folder contains 6 datasets for directly generating Fig. 3, Fig. 4, Fig. 5, and Fig. S6 (see **2.4 How to reproduce figures?**).
-* :file_folder:	`figures` folder contains 4 JPG files of Fig. 3, Fig. 4, Fig. 5 and Fig. S6.
+* :file_folder:	`figures` folder contains 4 PNG files of Fig. 3, Fig. 4, Fig. 5 and Fig. S6.
 
 
 ### 2.2 Datasets description
