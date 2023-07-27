@@ -4,7 +4,7 @@
 
 Jeannot, L.-L., Mouronvalle, C., Peyran, C., Olabarria, C., Beger, M., Blanco, A., Planes, S. Deriving connectivity from relatedness: broad-scale isolation-by-distance in the shanny *Lipophrys pholis*. Marine Ecology Progress Series (in rev).
 
-[![Generic badge]((https://zenodo.org/badge/DOI/10.5281/zenodo.8190819.svg))](https://zenodo.org/record/8190819)
+[![Generic badge](https://zenodo.org/badge/DOI/10.5281/zenodo.8190819.svg)](https://zenodo.org/record/8190819)
 
 
 ## 1. How to download this project?
